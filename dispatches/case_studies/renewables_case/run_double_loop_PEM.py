@@ -112,7 +112,7 @@ wind_rt_cfs = wind_df[f"{wind_generator}-RTCF"].values.tolist()
 
 output_dir = Path(f"double_loop_parametrized_results_subannual")
 
-solver = pyo.SolverFactory("xpress_direct")
+solver = pyo.SolverFactory("cbc")
 
 thermal_generator_params = {
     "gen_name": wind_generator,
@@ -127,7 +127,7 @@ thermal_generator_params = {
     "startup_capacity": 0,
     "initial_status": 1,
     "initial_p_output": 0,
-    "production_cost_bid_pairs": [(p_min, 0)],
+    "production_cost_bid_pairs": [(p_min, 0), (wind_pmax, 0)],
     "startup_cost_pairs": [(0, 0)],
     "fixed_commitment": None,
 }
@@ -219,6 +219,25 @@ plugin_module = PrescientPluginModule(
     register_plugins=coordinator.register_plugins,
 )
 
+from pyomo.common.config import ConfigDict
+
+def retype_gen_callback(options, md):
+    md.data["elements"]["generator"][wind_generator]["generator_type"] = "thermal"
+    md.data["elements"]["generator"][wind_generator]["ramp_up_60min"] = wind_pmax
+    md.data["elements"]["generator"][wind_generator]["ramp_down_60min"] = wind_pmax
+    md.data["elements"]["generator"][wind_generator]["shutdown_capacity"] = wind_pmax
+    md.data["elements"]["generator"][wind_generator]["startup_capacity"] = wind_pmax
+
+def register_plugins(context, options, plugin_config):
+    context.register_after_get_initial_actuals_model_for_sced_callback(retype_gen_callback)
+    context.register_after_get_initial_forecast_model_for_ruc_callback(retype_gen_callback)
+    context.register_after_get_initial_actuals_model_for_simulation_actuals_callback(retype_gen_callback)
+
+set_thermal = PrescientPluginModule(
+    get_configuration=lambda k : ConfigDict(),
+    register_plugins=register_plugins
+)
+
 prescient_options = {
     "data_path": rts_gmlc_data_dir,
     "reserve_factor": reserve_factor,
@@ -248,6 +267,7 @@ prescient_options = {
     "disable_stackgraphs":True,
     "symbolic_solver_labels": True,
     "plugin": {
+        "set_thermal" : {"module": set_thermal},
         "doubleloop": {
             "module": plugin_module,
             "bidding_generator": wind_generator,
