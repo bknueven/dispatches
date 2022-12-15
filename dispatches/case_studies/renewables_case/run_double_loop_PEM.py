@@ -124,12 +124,12 @@ thermal_generator_params = {
     "ramp_up_60min": wind_pmax,
     "ramp_down_60min": wind_pmax,
     "shutdown_capacity": wind_pmax,
-    "startup_capacity": 0,
+    "startup_capacity": wind_pmax,
     "initial_status": 1,
     "initial_p_output": 0,
     "production_cost_bid_pairs": [(p_min, 0), (wind_pmax, 0)],
     "startup_cost_pairs": [(0, 0)],
-    "fixed_commitment": None,
+    "fixed_commitment": 1,
 }
 model_data = ThermalGeneratorModelData(**thermal_generator_params)
 
@@ -219,14 +219,53 @@ plugin_module = PrescientPluginModule(
     register_plugins=coordinator.register_plugins,
 )
 
-from pyomo.common.config import ConfigDict
 
-def retype_gen_callback(options, md):
-    md.data["elements"]["generator"][wind_generator]["generator_type"] = "thermal"
-    md.data["elements"]["generator"][wind_generator]["ramp_up_60min"] = wind_pmax
-    md.data["elements"]["generator"][wind_generator]["ramp_down_60min"] = wind_pmax
-    md.data["elements"]["generator"][wind_generator]["shutdown_capacity"] = wind_pmax
-    md.data["elements"]["generator"][wind_generator]["startup_capacity"] = wind_pmax
+from pyomo.common.config import ConfigDict
+from idaes.apps.grid_integration.utils import convert_marginal_costs_to_actual_costs
+
+def create_retype_gen_callback(model_data):
+    def retype_gen_callback(options, instance):
+        gen_name = model_data.gen_name
+        gen_dict = instance.data["elements"]["generator"][gen_name]
+
+        is_thermal = (
+            model_data.generator_type == "thermal"
+        )
+        is_renewable = (
+            model_data.generator_type == "renewable"
+        )
+
+        for param, value in model_data:
+            if param == "gen_name" or value is None:
+                continue
+            elif (
+                param in gen_dict
+                and isinstance(gen_dict[param], dict)
+                and gen_dict[param]["data_type"] == "time_series"
+            ):
+                # don't touch time varying things;
+                # presumably they be updated later
+                continue
+            elif param == "p_cost":
+                if is_thermal:
+                    curve_value = convert_marginal_costs_to_actual_costs(value)
+                    gen_dict[param] = {
+                        "data_type": "cost_curve",
+                        "cost_curve_type": "piecewise",
+                        "values": curve_value,
+                    }
+                elif is_renewable:
+                    gen_dict[param] = value
+                else:
+                    raise NotImplementedError(
+                        "generator_type must be either 'thermal' or 'renewable'"
+                    )
+            else:
+                gen_dict[param] = value
+
+    return retype_gen_callback
+
+retype_gen_callback = create_retype_gen_callback(model_data)
 
 def register_plugins(context, options, plugin_config):
     context.register_after_get_initial_actuals_model_for_sced_callback(retype_gen_callback)
@@ -235,8 +274,9 @@ def register_plugins(context, options, plugin_config):
 
 set_thermal = PrescientPluginModule(
     get_configuration=lambda k : ConfigDict(),
-    register_plugins=register_plugins
+    register_plugins=register_plugins,
 )
+
 
 prescient_options = {
     "data_path": rts_gmlc_data_dir,
